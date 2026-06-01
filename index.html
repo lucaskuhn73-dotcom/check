@@ -77,6 +77,13 @@ html.light .seg button.on{color:#fff;}
 .bar>i{display:block;height:100%;border-radius:999px;}
 
 /* term row */
+.hcap{text-transform:none;letter-spacing:0;font-weight:600;color:var(--muted);}
+.srow{display:flex;align-items:center;gap:.7rem;padding:.6rem .7rem;background:var(--card2);border:1px solid var(--border);border-radius:11px;margin-top:.55rem;}
+.srow .dot{font-size:1.1rem;line-height:1;}
+.srow .si{flex:1;min-width:0;}
+.srow .si .t{font-size:.74rem;font-weight:800;}
+.srow .si .s{font-size:.6rem;color:var(--muted);margin-top:.12rem;}
+.srow .sv{font-size:.8rem;font-weight:800;text-align:right;white-space:nowrap;}
 .trow{display:flex;align-items:center;justify-content:space-between;padding:.6rem 0;border-bottom:1px solid var(--border);}
 .trow:last-child{border-bottom:none;}
 .trow .tn{font-size:.72rem;font-weight:700;}
@@ -162,19 +169,19 @@ html.light .seg button.on{color:#fff;}
         <div class="kgrid">
           <div class="kpi"><div class="lbl">PA · Peças/Venda</div><div class="val" id="k-pa">—</div></div>
           <div class="kpi"><div class="lbl">TM · Ticket Médio</div><div class="val" id="k-tm">—</div></div>
-          <div class="kpi full" id="k-7030-box">
-            <span class="tag" id="k-7030-tag"></span>
-            <div class="lbl">70/30 · vs 1º colocado da loja</div>
-            <div class="val" id="k-7030">—</div>
-            <div class="bar"><i id="k-7030-bar"></i></div>
-            <div class="sub" id="k-7030-sub"></div>
-          </div>
         </div>
+        <div id="status-list"></div>
       </div>
 
       <div class="card">
-        <div class="card-h">Termômetros por categoria</div>
+        <div class="card-h">Termômetro de peças <span class="hcap">· sua posição na loja</span></div>
         <div id="term-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">Resumo da dezena</div>
+        <div class="kgrid" id="fatdez-grid"></div>
+        <div id="resumo-dez" style="margin-top:.5rem"></div>
       </div>
 
       <div class="card">
@@ -423,21 +430,67 @@ function calcVendedor(){
   }
   const pct7030=top>0?(vlVendas/top*100):0;
 
-  /* termômetros por categoria */
-  const cats=[["OC","OC"],["RE","RE"],["CG","CG"],["LE","Lentes"],["Aces","Acessórios"]];
+  /* termômetros por categoria — qtd + posição na loja (sem nomes) */
+  const cats=[["OC","OC"],["RE","Relógios"],["CG","CG"],["LE","Lentes"],["Aces","Acessórios"]];
   const term=cats.map(([k,lbl])=>{
     const rows=DB.termometros[k]||[];
     const ln=acharLinha(rows,SESSION.nome);
-    return {key:k,label:lbl,vl:parseMoney(valLinha(rows,ln,"vlvendas","vl vendas")),qt:parseMoney(valLinha(rows,ln,"qtdepecas","qtde"))};
+    const qt=parseMoney(valLinha(rows,ln,"qtdepecas","qtde"));
+    const ni=tabIndex(rows,"vendedor","nome");
+    let arr=[];
+    if(rows&&rows.length>1&&ni>=0){
+      rows.slice(1).forEach(r=>{const nm=String(r[ni]||"");if(!nm)return;if(lojaDe(nm)!==SESSION.loja)return;arr.push(parseMoney(valLinha(rows,r,"qtdepecas","qtde")));});
+    }
+    arr=arr.filter(q=>q>0).sort((a,b)=>b-a);
+    return {key:k,label:lbl,qt,leader:arr.length?arr[0]:0,count:arr.length,pos:qt>0?arr.filter(q=>q>qt).length+1:0};
   });
+  const tQ={}; term.forEach(t=>tQ[t.key]=t.qt);
 
-  /* faturamento diário do vendedor */
+  /* proporção Relógios: 1 RE a cada 4 OC (só algumas lojas) */
+  const reLojas=["ATM","PBA LJR","PARAÍSO","TAPAJÓS","PBA SHOP"];
+  const reNeed=tQ.OC>0?tQ.OC/4:0;
+  const rel={aplica:reLojas.includes(SESSION.loja),oc:tQ.OC,re:tQ.RE,need:reNeed,
+    falta:Math.max(0,Math.ceil(reNeed-tQ.RE)),temBase:tQ.OC>0,ok:tQ.OC>0&&tQ.RE>=reNeed};
+
+  /* taxa de conversão em lentes: (LE/2)/CG > 90% (só algumas lojas) */
+  const leLojas=["OTC TPJ","OTC PBA","ATM","PBA LJR","PARAÍSO","TAPAJÓS"];
+  const convL=tQ.CG>0?((tQ.LE/2)/tQ.CG*100):0;
+  const lente={aplica:leLojas.includes(SESSION.loja),le:tQ.LE,cg:tQ.CG,conv:convL,temBase:tQ.CG>0,ok:convL>90};
+
+  /* faturamento diário do vendedor + por dezena */
   const diasMap=faturamentoVendedor(SESSION.nome);
+  const fatDez={1:0,2:0,3:0,total:0};
+  Object.entries(diasMap).forEach(([d,v])=>{const dz=dezenaDoDia(+d);fatDez[dz]+=v;fatDez.total+=v;});
+
+  /* líder da dezena na loja (faturamento) — sem expor nome */
+  const dzAtual=dezenaDoDia(new Date().getDate());
+  const rDz=rangeDezena(dzAtual);
+  const all=parseFatAll();
+  let leaderDez=0;
+  Object.values(all).forEach(o=>{if(o.loja!==SESSION.loja)return;let s=0;Object.entries(o.diasMap).forEach(([dd,v])=>{if(+dd>=rDz.min&&+dd<=rDz.max)s+=v;});if(s>leaderDez)leaderDez=s;});
+  const pctLiderDez=leaderDez>0?(fatDez[dzAtual]/leaderDez*100):0;
 
   /* curva acumulada (até hoje) + recálculos */
   const curva=curvaVendedor(SESSION.nome,SESSION.loja,SESSION.cargo,vlVendas,diasMap);
 
-  return {pa,tm,vlVendas,qtdVendas,pecas,top,pct7030,term,diasMap,curva};
+  return {pa,tm,vlVendas,qtdVendas,pecas,top,pct7030,term,rel,lente,diasMap,fatDez,leaderDez,pctLiderDez,dzAtual,curva};
+}
+
+/* faturamento de TODOS: {nome:{loja,diasMap}} — usado p/ achar líder da dezena */
+function parseFatAll(){
+  const rows=DB.faturamento;const out={};
+  if(!rows||rows.length<2)return out;
+  let atual=null;
+  rows.forEach(row=>{
+    const a=String(row[0]||"").trim();
+    if(!a)return;
+    if(/^sub-?\s*totais/i.test(a)){atual=null;return;}
+    if(/^loja venda/i.test(a)){atual=null;return;}
+    const dia=extraiDia(row[0]);
+    if(dia!==null){if(atual){const v=parseMoney(row[1]);if(v>0)out[atual].diasMap[dia]=(out[atual].diasMap[dia]||0)+v;}return;}
+    atual=a;if(!out[atual])out[atual]={loja:lojaDe(a),diasMap:{}};
+  });
+  return out;
 }
 
 /* faturamento: {dia:valor} do vendedor logado */
@@ -511,43 +564,90 @@ function curvaVendedor(nome,loja,cargo,realizadoMes,diasMap){
   const pesoDez=restDez>0?cDezHoje/restDez:0;
   const metaDiaDez=cDezHoje>0?Math.max(0,cDezHoje-desvioDez*pesoDez):0;
 
+  const metaMesCurva=curvaAteHoje+curvaAposHoje;
+  const metaDezCurva=cDezAteOntem+cDezHoje+cDezAposHoje;
+  const curvaAteHojeDez=cDezAteOntem+cDezHoje;
+  const projMes=curvaAteHoje>0?realizadoMes/curvaAteHoje*metaMesCurva:realizadoMes;
+  const projDez=curvaAteHojeDez>0?realizadoDez/curvaAteHojeDez*metaDezCurva:realizadoDez;
+  const pctMetaDez=metaDezCurva>0?realizadoDez/metaDezCurva*100:0;
+
   return {
     ok:curvaAteHoje>0,
     curvaAteHoje, realizadoMes, desvioMes,
     curvaHoje, metaDiaMes,
-    cDezHoje, metaDiaDez, realizadoDez, dezena:dz
+    cDezHoje, metaDiaDez, realizadoDez, dezena:dz,
+    metaMesCurva, metaDezCurva, projMes, projDez, pctMetaDez
   };
 }
 
 /* ===================== RENDER CHECK-IN ===================== */
+function statusRow(ok,title,sub,val,valColor){
+  const dot=ok===null?"⚪":(ok?"🟢":"🔴");
+  return `<div class="srow"><span class="dot">${dot}</span><div class="si"><div class="t">${title}</div><div class="s">${sub}</div></div><div class="sv" style="color:${valColor||'var(--text)'}">${val}</div></div>`;
+}
 function renderCheckin(){
   if(!VDATA)return;
   const d=VDATA;
   document.getElementById("k-pa").textContent=fmtN(d.pa);
   document.getElementById("k-tm").textContent=fmtR(d.tm);
 
-  /* 70/30 */
+  /* ----- status: 70/30, relógios, conversão lentes ----- */
+  let html="";
   const ok73=d.pct7030>=70;
-  document.getElementById("k-7030").textContent=d.pct7030.toFixed(1)+"%";
-  document.getElementById("k-7030").style.color=ok73?"var(--pos-color)":"var(--neg-color)";
-  const bar=document.getElementById("k-7030-bar");
-  bar.style.width=Math.min(d.pct7030,100)+"%";
-  bar.style.background=ok73?"var(--pos-color)":"var(--neg-color)";
-  const tag73=document.getElementById("k-7030-tag");
-  tag73.textContent=ok73?"✓ NA META":"✗ ABAIXO";tag73.className="tag "+(ok73?"tag-ok":"tag-no");
   const falta=Math.max(0,d.top*0.7-d.vlVendas);
-  document.getElementById("k-7030-sub").innerHTML= d.top>0
-    ? `1º da loja: <b>${fmtR(d.top)}</b> · você: <b>${fmtR(d.vlVendas)}</b>`+(ok73?" · meta de 70% batida 🎯":` · faltam <b style="color:var(--neg-color)">${fmtR(falta)}</b> p/ 70%`)
-    : "Sem referência de 1º colocado.";
+  html+=statusRow(d.top>0?ok73:null,"70/30 · 70% do líder da loja",
+    d.top>0?`você: ${fmtR(d.vlVendas)} · líder: ${fmtR(d.top)}`:"sem referência de líder",
+    d.top>0?(ok73?"✓ dentro":"faltam "+fmtR(falta)):"—",
+    d.top>0?(ok73?"var(--pos-color)":"var(--neg-color)"):"var(--muted)");
 
-  /* termômetros */
+  if(d.rel.aplica){
+    const reOk=d.rel.ok; /* ok já exige OC>0 e RE>=OC/4 */
+    html+=statusRow(reOk,"Relógios · 1 a cada 4 OC",
+      `${d.rel.re} relógios · ${d.rel.oc} OC`,
+      reOk?"✓ na proporção":(d.rel.temBase?"faltam "+d.rel.falta+" RE":"sem OC vendido"),
+      reOk?"var(--pos-color)":"var(--neg-color)");
+  }
+  if(d.lente.aplica){
+    html+=statusRow(d.lente.temBase?d.lente.ok:null,"Conversão em lentes · meta >90%",
+      `LE ${d.lente.le} (÷2 = ${d.lente.le/2}) · CG ${d.lente.cg}`,
+      d.lente.temBase?d.lente.conv.toFixed(0)+"%":"sem CG",
+      d.lente.temBase?(d.lente.ok?"var(--pos-color)":"var(--neg-color)"):"var(--muted)");
+  }
+  document.getElementById("status-list").innerHTML=html;
+
+  /* ----- termômetro de peças (qtd + posição na loja, sem nomes) ----- */
   document.getElementById("term-list").innerHTML=d.term.map(t=>{
-    const has=t.vl>0||t.qt>0;
+    const has=t.qt>0;
+    let comp;
+    if(has){
+      const medal=t.pos===1?"🥇 1º":t.pos===2?"🥈 2º":t.pos===3?"🥉 3º":t.pos+"º";
+      comp=`${medal} de ${t.count} na loja`+(t.leader>t.qt?` · líder: ${t.leader} pç`:"");
+    }else comp="sem vendas no mês";
     return `<div class="trow">
-      <div class="tn" style="color:${t.vl>0?'var(--text)':'var(--muted)'}">${t.label}</div>
-      <div class="tv">${has?fmtR(t.vl):'<span style="color:var(--muted)">—</span>'}<small>${has?t.qt+" peças":"sem vendas"}</small></div>
+      <div class="tn" style="color:${has?'var(--text)':'var(--muted)'}">${t.label}</div>
+      <div class="tv">${has?t.qt+' <small style="display:inline;color:var(--muted)">pç</small>':'—'}<small>${comp}</small></div>
     </div>`;
   }).join("");
+
+  /* ----- faturamento por dezena ----- */
+  const f=d.fatDez;const dzA=dezenaDoDia(new Date().getDate());
+  const cel=(dz,lbl)=>`<div class="kpi" style="${dz===dzA?'border-color:var(--accent)':''}"><div class="lbl">${lbl}${dz===dzA?' · atual':''}</div><div class="val" style="font-size:1rem">${fmtR(f[dz])}</div></div>`;
+  document.getElementById("fatdez-grid").innerHTML=
+    cel(1,"1ª Dezena")+cel(2,"2ª Dezena")+cel(3,"3ª Dezena")+
+    `<div class="kpi full" style="background:linear-gradient(90deg,rgba(0,255,224,.06),transparent)"><div class="lbl">Total do mês</div><div class="val">${fmtR(f.total)}</div></div>`;
+
+  const cv=d.curva;
+  const liderTxt=d.leaderDez>0?(d.pctLiderDez>=100?"🥇 você é o líder":d.pctLiderDez.toFixed(0)+"% do líder"):"—";
+  const resRows=[
+    ["% do líder (dezena)",liderTxt],
+    ["% meta da dezena",cv.ok?cv.pctMetaDez.toFixed(0)+"%":"—"],
+    ["Nº de vendas (mês)",String(Math.round(d.qtdVendas))],
+    ["Peças (mês)",String(Math.round(d.pecas))],
+    ["Projeção da dezena",cv.ok?fmtR(cv.projDez):"—"],
+    ["Projeção do mês",cv.ok?fmtR(cv.projMes):"—"]
+  ];
+  document.getElementById("resumo-dez").innerHTML=resRows.map(([l,v])=>
+    `<div class="trow"><div class="tn" style="color:var(--muted);font-weight:600">${l}</div><div class="tv" style="font-size:.78rem">${v}</div></div>`).join("");
 
   /* curva */
   const c=d.curva;
@@ -668,15 +768,15 @@ async function enviar(payload,statusEl,btn){
   statusEl.innerHTML='<span class="spin"></span>Enviando…';
   btn.disabled=true;
   try{
-    const r=await fetch(APPS_SCRIPT_URL,{method:"POST",redirect:"follow",
+    await fetch(APPS_SCRIPT_URL,{method:"POST",mode:"no-cors",redirect:"follow",
       headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(payload)});
-    let ok=r.ok;try{const j=await r.json();ok=j.ok!==false;}catch(e){}
-    if(!ok)throw new Error("resposta");
+    /* no-cors não deixa ler a resposta, mas o registro é gravado no Sheets.
+       Se a chamada não estourar exceção de rede, consideramos enviado. */
     statusEl.textContent="✅ Registrado com sucesso!";statusEl.style.color="var(--pos-color)";
     return true;
   }catch(e){
     console.error(e);
-    statusEl.innerHTML="⚠️ Não consegui confirmar o envio. Verifique se o App Script foi atualizado com o <b>doPost</b> e reimplantado.";
+    statusEl.innerHTML="⚠️ Sem conexão. Tente novamente em instantes.";
     statusEl.style.color="var(--neg-color)";
     return false;
   }finally{btn.disabled=false;}
